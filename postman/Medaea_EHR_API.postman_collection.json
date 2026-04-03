@@ -1,0 +1,858 @@
+{
+  "info": {
+    "_postman_id": "medaea-ehr-v1-2026",
+    "name": "Medaea EHR API — v1.0.0",
+    "description": "Complete Postman collection for the Medaea EHR FastAPI backend.\n\n## Base URL\n`{{base_url}}` = `http://localhost:8000` (dev) or your deployed domain.\n\n## Authentication\nAll protected endpoints require a Bearer JWT token in the Authorization header:\n```\nAuthorization: Bearer {{access_token}}\n```\nRun the **Login** request first — it sets `{{access_token}}` automatically via the Test script.\n\n## Domains\n- Authentication & MFA\n- Users & Profiles\n- Patients\n- Appointments & Calendar\n- Encounters (SOAP notes)\n- Clinical Charting (Allergies, Medications, Problems, Immunizations)\n- Audit Logs\n- Organizations\n\n## Version\n`v1.0.0` — April 2026 — Phase 1 Complete",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    }
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000", "type": "string" },
+    { "key": "access_token", "value": "", "type": "string" },
+    { "key": "patient_id", "value": "", "type": "string" },
+    { "key": "appointment_id", "value": "", "type": "string" },
+    { "key": "encounter_id", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "System",
+      "description": "System health and status endpoints",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/health", "host": ["{{base_url}}"], "path": ["api","health"] },
+            "description": "Returns service health status. No authentication required. Useful for uptime monitoring and CI/CD health checks."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": { "method": "GET", "url": { "raw": "{{base_url}}/api/health" } },
+              "status": "OK",
+              "code": 200,
+              "body": "{\"status\": \"ok\", \"service\": \"medaea-fastapi\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Authentication",
+      "description": "Full HIPAA/ONC-compliant auth flow: Signup → Verify Email → Login → MFA → JWT access token.\n\nFlow:\n1. POST /auth/signup\n2. POST /auth/verify-email (if email verification enabled)\n3. POST /auth/login → get JWT\n4. If MFA enabled: POST /auth/mfa/verify → get final JWT",
+      "item": [
+        {
+          "name": "Signup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.access_token) {",
+                  "    pm.collectionVariables.set('access_token', json.access_token);",
+                  "  }",
+                  "  pm.test('Signup successful', () => pm.response.to.have.status(201));",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"provider@hospital.org\",\n  \"password\": \"SecurePass1!\",\n  \"first_name\": \"Jane\",\n  \"last_name\": \"Smith\",\n  \"phone\": \"+15555555555\",\n  \"role\": \"doctor\",\n  \"specialty\": \"Internal Medicine\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/auth/signup", "host": ["{{base_url}}"], "path": ["api","v1","auth","signup"] },
+            "description": "Register a new provider account.\n\n**Password requirements**: min 8 chars, at least 1 uppercase, 1 lowercase, 1 number.\n\n**Roles**: `doctor`, `nurse`, `admin`, `staff`\n\nIf `REQUIRE_EMAIL_VERIFICATION=true`, a verification email is sent and the account is locked until verified.\nIf `false` (default dev setting), login is allowed immediately."
+          },
+          "response": [
+            {
+              "name": "201 Created — Email Verification Required",
+              "status": "Created", "code": 201,
+              "body": "{\"message\": \"Account created. Please check your email to verify your account.\"}"
+            },
+            {
+              "name": "201 Created — Direct Login (no verification)",
+              "status": "Created", "code": 201,
+              "body": "{\"access_token\": \"eyJ...\", \"token_type\": \"bearer\", \"user\": {\"id\": \"uuid\", \"email\": \"provider@hospital.org\", \"first_name\": \"Jane\", \"last_name\": \"Smith\", \"role\": \"doctor\"}}"
+            },
+            {
+              "name": "409 Conflict — Email Already Exists",
+              "status": "Conflict", "code": 409,
+              "body": "{\"detail\": \"An account with this email already exists.\"}"
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.access_token) {",
+                  "    pm.collectionVariables.set('access_token', json.access_token);",
+                  "    pm.test('Login successful — token stored', () => true);",
+                  "  } else if (json.mfa_required) {",
+                  "    pm.test('MFA challenge required', () => true);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "username", "value": "provider@hospital.org" },
+                { "key": "password", "value": "SecurePass1!" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api","v1","auth","login"] },
+            "description": "OAuth2-compatible login using `application/x-www-form-urlencoded`.\n\n**Flow**:\n1. If email verification required and not verified → 403 error\n2. If MFA enabled → returns `{mfa_required: true, mfa_method: 'authenticator'|'sms'|'email'}` with no token\n3. If no MFA → returns JWT access_token immediately\n\nThe Test script auto-saves `access_token` to collection variables."
+          },
+          "response": [
+            {
+              "name": "200 OK — JWT token",
+              "status": "OK", "code": 200,
+              "body": "{\"access_token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\", \"token_type\": \"bearer\", \"user\": {\"id\": \"uuid\", \"email\": \"provider@hospital.org\", \"first_name\": \"Jane\", \"role\": \"doctor\", \"mfa_enabled\": false}}"
+            },
+            {
+              "name": "200 OK — MFA Required",
+              "status": "OK", "code": 200,
+              "body": "{\"mfa_required\": true, \"mfa_method\": \"authenticator\", \"message\": \"Enter your 6-digit TOTP code.\"}"
+            },
+            {
+              "name": "401 Unauthorized — Wrong credentials",
+              "status": "Unauthorized", "code": 401,
+              "body": "{\"detail\": \"Invalid credentials.\"}"
+            },
+            {
+              "name": "403 Forbidden — Email not verified",
+              "status": "Forbidden", "code": 403,
+              "body": "{\"detail\": \"Please verify your email before logging in.\"}"
+            }
+          ]
+        },
+        {
+          "name": "Verify Email",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{email_verification_token}}\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/auth/verify-email", "host": ["{{base_url}}"], "path": ["api","v1","auth","verify-email"] },
+            "description": "Verify the email address using the token sent in the welcome/verification email.\n\nToken is included in the link: `{frontend_url}/verify-email?token=<token>`\n\nToken expires in 24 hours."
+          }
+        },
+        {
+          "name": "Resend Verification Email",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"provider@hospital.org\"\n}" },
+            "url": { "raw": "{{base_url}}/api/v1/auth/resend-verification", "host": ["{{base_url}}"], "path": ["api","v1","auth","resend-verification"] },
+            "description": "Request a new verification email if the original expired or was not received."
+          }
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"provider@hospital.org\"\n}" },
+            "url": { "raw": "{{base_url}}/api/v1/auth/forgot-password", "host": ["{{base_url}}"], "path": ["api","v1","auth","forgot-password"] },
+            "description": "Sends a password reset link to the user's email. Token expires in 1 hour.\n\nAlways returns 200 (never reveals whether email exists — HIPAA security)."
+          }
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{password_reset_token}}\",\n  \"new_password\": \"NewSecurePass1!\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/auth/reset-password", "host": ["{{base_url}}"], "path": ["api","v1","auth","reset-password"] },
+            "description": "Set a new password using the token from the reset email.\n\n**Password requirements**: min 8 chars, 1 uppercase, 1 lowercase, 1 number."
+          }
+        },
+        {
+          "name": "MFA Setup — Initiate",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"authenticator\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/auth/mfa/setup", "host": ["{{base_url}}"], "path": ["api","v1","auth","mfa","setup"] },
+            "description": "Initiate MFA enrollment.\n\n**Methods**:\n- `authenticator` — TOTP (Google Authenticator, Authy, etc.) — returns QR code URL and secret\n- `sms` — SMS via Twilio — returns confirmation message\n- `email` — OTP to email\n\nAfter calling setup, user scans QR code and calls `/mfa/finalize` to confirm."
+          }
+        },
+        {
+          "name": "MFA Setup — Finalize",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"123456\"\n}" },
+            "url": { "raw": "{{base_url}}/api/v1/auth/mfa/finalize", "host": ["{{base_url}}"], "path": ["api","v1","auth","mfa","finalize"] },
+            "description": "Confirm MFA enrollment by submitting the first 6-digit TOTP code from the authenticator app.\n\nOnce finalized, MFA is enabled and will be required on all future logins."
+          }
+        },
+        {
+          "name": "MFA Verify — During Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.access_token) {",
+                  "    pm.collectionVariables.set('access_token', json.access_token);",
+                  "    pm.test('MFA verified — token stored', () => true);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"provider@hospital.org\",\n  \"code\": \"123456\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/auth/mfa/verify", "host": ["{{base_url}}"], "path": ["api","v1","auth","mfa","verify"] },
+            "description": "Submit MFA code after the login challenge. Returns a full JWT access_token on success.\n\nTest script auto-saves the token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "description": "Current authenticated user profile management.",
+      "item": [
+        {
+          "name": "Get My Profile",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/users/me", "host": ["{{base_url}}"], "path": ["api","v1","users","me"] },
+            "description": "Returns the full profile of the currently authenticated user including organization memberships, role, specialty, NPI, MFA status."
+          }
+        },
+        {
+          "name": "Update My Profile",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Jane\",\n  \"last_name\": \"Smith\",\n  \"phone\": \"+15555555555\",\n  \"specialty\": \"Cardiology\",\n  \"npi\": \"1234567890\",\n  \"provider_type\": \"MD\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/users/me", "host": ["{{base_url}}"], "path": ["api","v1","users","me"] },
+            "description": "Update the authenticated user's profile. All fields are optional (PATCH semantics). Supports both PUT and PATCH."
+          }
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"current_password\": \"OldPass1!\",\n  \"new_password\": \"NewPass1!\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/users/me/password", "host": ["{{base_url}}"], "path": ["api","v1","users","me","password"] },
+            "description": "Change the authenticated user's password. Requires current password verification."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Patients",
+      "description": "Patient registry management — CRUD operations on patient demographics.\n\nAll patient data is scoped to the authenticated user's organization.",
+      "item": [
+        {
+          "name": "List Patients",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const patients = pm.response.json();",
+                  "  if (patients.length > 0) {",
+                  "    pm.collectionVariables.set('patient_id', patients[0].id);",
+                  "    pm.test('Patient list loaded — ID stored', () => true);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/patients?search=&status=active&skip=0&limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","patients"],
+              "query": [
+                { "key": "search", "value": "", "description": "Search by first name, last name, or email" },
+                { "key": "status", "value": "active", "description": "Filter by status: active | inactive | deceased" },
+                { "key": "skip", "value": "0" },
+                { "key": "limit", "value": "50" }
+              ]
+            },
+            "description": "Returns paginated list of patients for the authenticated user's organization."
+          }
+        },
+        {
+          "name": "Create Patient",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const patient = pm.response.json();",
+                  "  pm.collectionVariables.set('patient_id', patient.id);",
+                  "  pm.test('Patient created — ID stored', () => true);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"John\",\n  \"last_name\": \"Doe\",\n  \"email\": \"john.doe@email.com\",\n  \"phone\": \"+15555550001\",\n  \"date_of_birth\": \"1985-03-15\",\n  \"gender\": \"Male\",\n  \"address\": \"123 Main St\",\n  \"city\": \"Phoenix\",\n  \"state\": \"AZ\",\n  \"zip\": \"85001\",\n  \"race\": \"White\",\n  \"ethnicity\": \"Not Hispanic or Latino\",\n  \"preferred_language\": \"English\",\n  \"marital_status\": \"Married\",\n  \"mrn\": \"MRN-00001\",\n  \"status\": \"active\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/patients", "host": ["{{base_url}}"], "path": ["api","v1","patients"] },
+            "description": "Register a new patient. `mrn` (Medical Record Number) should be unique per organization.\n\nRequired: `first_name`, `last_name`\n\nDemographic fields (race, ethnicity, preferred_language) are required for ONC/CMS compliance reporting."
+          }
+        },
+        {
+          "name": "Get Recent Patients",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/patients/recent?limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","patients","recent"],
+              "query": [{ "key": "limit", "value": "10" }]
+            },
+            "description": "Returns the most recently created patients (by created_at DESC). Useful for dashboard quick-access widgets."
+          }
+        },
+        {
+          "name": "Get Patient by ID",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}"] },
+            "description": "Returns full patient demographics by UUID."
+          }
+        },
+        {
+          "name": "Update Patient",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+15555550002\",\n  \"address\": \"456 New Ave\",\n  \"city\": \"Scottsdale\",\n  \"status\": \"active\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}"] },
+            "description": "Update patient demographics. All fields optional."
+          }
+        },
+        {
+          "name": "Delete Patient",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}"] },
+            "description": "Permanently deletes the patient record. Returns 204 No Content.\n\n⚠️ HIPAA NOTE: Consider soft-deletion (status='inactive') for production systems to maintain audit trails."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Appointments",
+      "description": "Appointment scheduling — create, view, update, and cancel appointments.",
+      "item": [
+        {
+          "name": "List Appointments",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const appts = pm.response.json();",
+                  "  if (appts.length > 0) {",
+                  "    pm.collectionVariables.set('appointment_id', appts[0].id);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/appointments?status=scheduled&date=2026-04-03",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","appointments"],
+              "query": [
+                { "key": "status", "value": "scheduled", "description": "scheduled | confirmed | in_progress | completed | cancelled | no_show" },
+                { "key": "date", "value": "2026-04-03", "description": "Filter by date YYYY-MM-DD" },
+                { "key": "skip", "value": "0" },
+                { "key": "limit", "value": "100" }
+              ]
+            },
+            "description": "Returns appointments for the authenticated provider. Filtered by status and/or date."
+          }
+        },
+        {
+          "name": "My Appointments",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/appointments/me", "host": ["{{base_url}}"], "path": ["api","v1","appointments","me"] },
+            "description": "Returns the last 50 appointments for the currently authenticated provider, ordered by start_time DESC."
+          }
+        },
+        {
+          "name": "Create Appointment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const appt = pm.response.json();",
+                  "  pm.collectionVariables.set('appointment_id', appt.id);",
+                  "  pm.test('Appointment created', () => true);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"patient_id\": \"{{patient_id}}\",\n  \"patient_first_name\": \"John\",\n  \"patient_last_name\": \"Doe\",\n  \"start_time\": \"2026-04-10T09:00:00Z\",\n  \"end_time\": \"2026-04-10T09:30:00Z\",\n  \"duration_minutes\": 30,\n  \"visit_type\": \"Follow-up\",\n  \"room\": \"Exam Room 1\",\n  \"condition_type\": \"Chronic\",\n  \"reason\": \"Hypertension follow-up\",\n  \"status\": \"scheduled\",\n  \"location_type\": \"in-person\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/appointments", "host": ["{{base_url}}"], "path": ["api","v1","appointments"] },
+            "description": "Create a new appointment.\n\n**Visit types**: `New Patient`, `Follow-up`, `Annual Exam`, `Sick Visit`, `Procedure`, `Telehealth`, `Consult`\n\n**Location types**: `in-person`, `telehealth`\n\n**Status**: `scheduled` (default), `confirmed`, `in_progress`, `completed`, `cancelled`, `no_show`"
+          }
+        },
+        {
+          "name": "Get Appointment by ID",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/appointments/{{appointment_id}}", "host": ["{{base_url}}"], "path": ["api","v1","appointments","{{appointment_id}}"] }
+          }
+        },
+        {
+          "name": "Update Appointment Status",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"completed\"\n}" },
+            "url": { "raw": "{{base_url}}/api/v1/appointments/{{appointment_id}}/status", "host": ["{{base_url}}"], "path": ["api","v1","appointments","{{appointment_id}}","status"] },
+            "description": "Quick status-only update. Use this for check-in workflow: scheduled → in_progress → completed."
+          }
+        },
+        {
+          "name": "Update Appointment (Full)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"start_time\": \"2026-04-10T10:00:00Z\",\n  \"end_time\": \"2026-04-10T10:30:00Z\",\n  \"room\": \"Exam Room 2\",\n  \"notes\": \"Rescheduled at patient request\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/appointments/{{appointment_id}}", "host": ["{{base_url}}"], "path": ["api","v1","appointments","{{appointment_id}}"] }
+          }
+        },
+        {
+          "name": "Delete Appointment",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/api/v1/appointments/{{appointment_id}}", "host": ["{{base_url}}"], "path": ["api","v1","appointments","{{appointment_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Calendar",
+      "description": "Calendar and scheduling views — providers, rooms, PTO, staff schedules, on-call assignments.",
+      "item": [
+        {
+          "name": "Calendar Events",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/calendar/events?start=2026-04-01&end=2026-04-30",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","calendar","events"],
+              "query": [
+                { "key": "start", "value": "2026-04-01" },
+                { "key": "end", "value": "2026-04-30" }
+              ]
+            },
+            "description": "Returns all calendar events (appointments formatted for FullCalendar) for the given date range."
+          }
+        },
+        {
+          "name": "Provider List",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/calendar/providers", "host": ["{{base_url}}"], "path": ["api","v1","calendar","providers"] },
+            "description": "Returns all active providers in the organization with color assignments for calendar display."
+          }
+        },
+        {
+          "name": "Room Status",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/calendar/rooms", "host": ["{{base_url}}"], "path": ["api","v1","calendar","rooms"] },
+            "description": "Returns all rooms with their current status (available/occupied/reserved/maintenance) and today's bookings."
+          }
+        },
+        {
+          "name": "List PTO Requests",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/calendar/pto", "host": ["{{base_url}}"], "path": ["api","v1","calendar","pto"] }
+          }
+        },
+        {
+          "name": "Create PTO Request",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"PTO\",\n  \"date_from\": \"2026-05-01\",\n  \"date_to\": \"2026-05-05\",\n  \"duration\": \"5 days\",\n  \"coverage_provider\": \"Dr. Jones\",\n  \"reason\": \"Family vacation\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/calendar/pto", "host": ["{{base_url}}"], "path": ["api","v1","calendar","pto"] },
+            "description": "Submit a PTO/sick leave/conference/blocked time request.\n\n**Types**: `PTO`, `Sick`, `Conference`, `Blocked`\n\n**Status flow**: `pending` → `approved` | `denied` (by admin)"
+          }
+        },
+        {
+          "name": "Update PTO Status",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"approved\"\n}" },
+            "url": { "raw": "{{base_url}}/api/v1/calendar/pto/{{pto_id}}", "host": ["{{base_url}}"], "path": ["api","v1","calendar","pto","{{pto_id}}"] }
+          }
+        },
+        {
+          "name": "List Availability Rules",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/calendar/availability-rules", "host": ["{{base_url}}"], "path": ["api","v1","calendar","availability-rules"] }
+          }
+        },
+        {
+          "name": "Create Availability Rule",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"15-Min Buffer Between Appointments\",\n  \"type\": \"Buffer\",\n  \"priority\": 1,\n  \"description\": \"Adds 15-minute buffer after each appointment\",\n  \"applies_to\": \"All Providers\",\n  \"conditions\": \"appointment_duration >= 30\",\n  \"enabled\": true\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/calendar/availability-rules", "host": ["{{base_url}}"], "path": ["api","v1","calendar","availability-rules"] }
+          }
+        },
+        {
+          "name": "List Schedule Templates",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/calendar/schedule-templates", "host": ["{{base_url}}"], "path": ["api","v1","calendar","schedule-templates"] }
+          }
+        },
+        {
+          "name": "List Staff Schedules",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/calendar/staff-schedules", "host": ["{{base_url}}"], "path": ["api","v1","calendar","staff-schedules"] }
+          }
+        },
+        {
+          "name": "List On-Call Assignments",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/calendar/on-call", "host": ["{{base_url}}"], "path": ["api","v1","calendar","on-call"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Encounters",
+      "description": "Clinical encounters / SOAP notes — the core clinical documentation module.",
+      "item": [
+        {
+          "name": "Get Patient Encounters",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const encs = pm.response.json();",
+                  "  if (encs.length > 0) {",
+                  "    pm.collectionVariables.set('encounter_id', encs[0].id);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/encounters/patient/{{patient_id}}", "host": ["{{base_url}}"], "path": ["api","v1","encounters","patient","{{patient_id}}"] },
+            "description": "Returns all encounters for a specific patient, ordered by encounter_date DESC."
+          }
+        },
+        {
+          "name": "Create Encounter",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('encounter_id', pm.response.json().id);",
+                  "  pm.test('Encounter created', () => true);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"patient_id\": \"{{patient_id}}\",\n  \"appointment_id\": \"{{appointment_id}}\",\n  \"encounter_type\": \"Office Visit\",\n  \"chief_complaint\": \"Patient presents with chest pain and shortness of breath for 2 days.\",\n  \"subjective\": \"Patient reports sharp chest pain 7/10, worse with exertion. Denies fever.\",\n  \"objective\": \"BP: 145/92, HR: 88, RR: 18, SpO2: 97%. Lungs clear. No murmurs.\",\n  \"assessment\": \"Hypertensive urgency. R/O acute coronary syndrome.\",\n  \"plan\": \"Order EKG, troponin x3, CBC. Start amlodipine 5mg QD. Follow up in 48h.\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/encounters", "host": ["{{base_url}}"], "path": ["api","v1","encounters"] },
+            "description": "Create a clinical encounter (SOAP note).\n\n**SOAP fields**:\n- `chief_complaint` — Patient's primary complaint in their own words\n- `subjective` — History of present illness, review of systems\n- `objective` — Vitals, physical exam findings, lab results\n- `assessment` — Clinical impression / diagnoses\n- `plan` — Treatment plan, orders, follow-up\n\n**Encounter types**: `Office Visit`, `Telehealth`, `Urgent Care`, `Annual Wellness`, `Procedure`, `Consult`\n\n**Status**: `open` (default), `signed`, `amended`"
+          }
+        },
+        {
+          "name": "Update Encounter",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"plan\": \"EKG normal. Troponin negative x3. Discharged with amlodipine 5mg. Follow-up in 1 week.\",\n  \"status\": \"signed\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/encounters/{{encounter_id}}", "host": ["{{base_url}}"], "path": ["api","v1","encounters","{{encounter_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Clinical Charting",
+      "description": "Patient clinical chart sub-resources: Allergies, Medications, Problems (diagnoses), and Immunizations.\n\nAll endpoints are scoped to `patients/{patient_id}/`.",
+      "item": [
+        {
+          "name": "Allergies — List",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}/allergies", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}","allergies"] }
+          }
+        },
+        {
+          "name": "Allergies — Add",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allergen\": \"Penicillin\",\n  \"reaction\": \"Anaphylaxis\",\n  \"severity\": \"life-threatening\",\n  \"status\": \"active\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}/allergies", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}","allergies"] },
+            "description": "Add an allergy to a patient's chart.\n\n**Severity levels**: `mild`, `moderate`, `severe`, `life-threatening`\n\n**Status**: `active`, `inactive`, `entered-in-error`\n\nSNOMED code support planned for ONC interoperability."
+          }
+        },
+        {
+          "name": "Medications — List",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}/medications", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}","medications"] }
+          }
+        },
+        {
+          "name": "Medications — Add",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Amlodipine\",\n  \"ndc_code\": \"00071-0155-23\",\n  \"rxnorm_code\": \"17767\",\n  \"dosage\": \"5mg\",\n  \"frequency\": \"Once daily\",\n  \"route\": \"Oral\",\n  \"status\": \"active\",\n  \"start_date\": \"2026-04-03\",\n  \"refills\": 3,\n  \"instructions\": \"Take in the morning with or without food.\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}/medications", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}","medications"] },
+            "description": "Add a medication to a patient's active medication list.\n\n**Codes**: NDC (National Drug Code), RxNorm supported for interoperability.\n\n**Status**: `active`, `discontinued`, `on-hold`, `completed`\n\n**Routes**: `Oral`, `IV`, `IM`, `Topical`, `Sublingual`, `Inhaled`"
+          }
+        },
+        {
+          "name": "Problems — List",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}/problems", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}","problems"] }
+          }
+        },
+        {
+          "name": "Problems — Add",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Essential hypertension\",\n  \"icd_code\": \"I10\",\n  \"status\": \"active\",\n  \"onset_date\": \"2024-01-15\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}/problems", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}","problems"] },
+            "description": "Add a diagnosis / problem to a patient's problem list.\n\n**ICD-10 code** required for billing and ONC compliance.\n\nSNOMED code also stored for interoperability.\n\n**Status**: `active`, `resolved`, `inactive`, `entered-in-error`"
+          }
+        },
+        {
+          "name": "Immunizations — List",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}/immunizations", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}","immunizations"] }
+          }
+        },
+        {
+          "name": "Immunizations — Add",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vaccine_name\": \"Influenza (Flu Shot)\",\n  \"cvx_code\": \"141\",\n  \"date_administered\": \"2026-04-03\",\n  \"dose_number\": 1,\n  \"lot_number\": \"LOT2026A\",\n  \"site\": \"Left deltoid\",\n  \"route\": \"IM\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/patients/{{patient_id}}/immunizations", "host": ["{{base_url}}"], "path": ["api","v1","patients","{{patient_id}}","immunizations"] },
+            "description": "Record an immunization administration.\n\n**CVX code** — CDC vaccine code required for immunization registries and ONC compliance.\n\n**Routes**: `IM` (intramuscular), `SC` (subcutaneous), `ID` (intradermal), `PO` (oral), `IN` (intranasal)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Organizations",
+      "description": "Organization membership and details for the authenticated user.",
+      "item": [
+        {
+          "name": "My Organizations",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/organizations/my-organizations", "host": ["{{base_url}}"], "path": ["api","v1","organizations","my-organizations"] },
+            "description": "Returns all organizations the authenticated user belongs to with their role and department within each."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audit Logs",
+      "description": "HIPAA-required audit trail — all access to PHI is logged.",
+      "item": [
+        {
+          "name": "Get Audit Logs",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}" }] },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/audit/logs?skip=0&limit=100",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","audit","logs"],
+              "query": [
+                { "key": "skip", "value": "0" },
+                { "key": "limit", "value": "100" }
+              ]
+            },
+            "description": "Returns paginated audit log entries ordered by created_at DESC.\n\nRequired for HIPAA §164.312(b) — Audit controls. All access to PHI is recorded with:\n- User who accessed\n- Action performed\n- Resource type and ID\n- IP address\n- PHI access flag"
+          }
+        }
+      ]
+    }
+  ]
+}
